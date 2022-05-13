@@ -13,6 +13,8 @@ import pandas as pd
 import smclarify
 import smclarify.bias.metrics
 from smclarify.bias.metrics import common
+from functional import pseq
+from functools import partial
 
 logger = logging.getLogger(__name__)
 
@@ -268,13 +270,13 @@ def _continuous_data_idx(x: pd.Series, data_threshold_index: pd.IntervalIndex) -
 
 
 def _categorical_metric_call_wrapper(
-    metric: Callable,
     df: pd.DataFrame,
     feature: pd.Series,
     facet_values: Optional[List[Any]],
     positive_label_index: pd.Series,
     positive_predicted_label_index: pd.Series,
     group_variable: pd.Series,
+    metric: Callable,
 ) -> MetricResult:
     """
     Dispatch calling of different metric functions with the correct arguments
@@ -305,13 +307,13 @@ def _categorical_metric_call_wrapper(
 
 
 def _continuous_metric_call_wrapper(
-    metric: Callable,
     df: pd.DataFrame,
     feature: pd.Series,
     facet_threshold_index: pd.IntervalIndex,
     positive_label_index: pd.Series,
     positive_predicted_label_index: pd.Series,
     group_variable: pd.Series,
+    metric: Callable,
 ) -> MetricResult:
     """
     Dispatch calling of different metric functions with the correct arguments and bool facet data
@@ -528,19 +530,17 @@ def _do_report(
             else [sensitive_facet_values]
         )
         for facet_values in facet_values_list:
-            # list of metrics with values
-            metrics_list = []
-            for metric in methods:
-                result = _categorical_metric_call_wrapper(
-                    metric,
-                    df,
-                    facet_data_series,
-                    facet_values,
-                    positive_label_index,
-                    positive_predicted_label_index,
-                    group_variable,
-                )
-                metrics_list.append(result)
+            calc_metric_partial = partial(
+                _categorical_metric_call_wrapper,
+                df,
+                facet_data_series,
+                facet_values,
+                positive_label_index,
+                positive_predicted_label_index,
+                group_variable,
+            )
+            # Parallelize calculation of each metric, uses multiprocessing
+            metrics_list = pseq(methods).map(calc_metric_partial).to_list()
             facet_metric = FacetReport(facet_value_or_threshold=",".join(map(str, facet_values)), metrics=metrics_list)
             metrics_result.append(facet_metric.toJson())
         logger.debug("metric_result: %s", str(metrics_result))
@@ -550,18 +550,17 @@ def _do_report(
         facet_interval_indices = _interval_index(facet_data_series, sensitive_facet_values)
         logger.info(f"Threshold Interval indices: {facet_interval_indices}")
         # list of metrics with values
-        metrics_list = []
-        for metric in methods:
-            result = _continuous_metric_call_wrapper(
-                metric,
-                df,
-                facet_data_series,
-                facet_interval_indices,
-                positive_label_index,
-                positive_predicted_label_index,
-                group_variable,
-            )
-            metrics_list.append(result)
+        calc_metric_partial = partial(
+            _continuous_metric_call_wrapper,
+            df,
+            facet_data_series,
+            facet_interval_indices,
+            positive_label_index,
+            positive_predicted_label_index,
+            group_variable,
+        )
+        # Parallelize calculation of each metric, uses multiprocessing
+        metrics_list = pseq(methods).map(calc_metric_partial).to_list()
         facet_metric = FacetReport(
             facet_value_or_threshold=",".join(map(str, facet_interval_indices)), metrics=metrics_list
         )
